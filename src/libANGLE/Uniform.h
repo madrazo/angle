@@ -11,8 +11,8 @@
 #include <vector>
 
 #include "angle_gl.h"
-#include "common/debug.h"
 #include "common/MemoryBuffer.h"
+#include "common/debug.h"
 #include "compiler/translator/blocklayout.h"
 #include "libANGLE/angletypes.h"
 
@@ -32,6 +32,7 @@ struct ActiveVariable
     void setActive(ShaderType shaderType, bool used);
     void unionReferencesWith(const ActiveVariable &other);
     bool isActive(ShaderType shaderType) const;
+    GLuint activeShaderCount() const;
 
   private:
     ShaderBitSet mActiveUseBits;
@@ -122,6 +123,6 @@ struct InterfaceBlock : public ShaderVariableBuffer
     unsigned int arrayElement;
 };
 
-}
+}  // namespace gl
 
-#endif   // LIBANGLE_UNIFORM_H_
+#endif  // LIBANGLE_UNIFORM_H_

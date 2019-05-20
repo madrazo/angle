@@ -46,6 +46,10 @@ bool isSingleStatement(TIntermNode *node)
     {
         return false;
     }
+    else if (node->getAsPreprocessorDirective())
+    {
+        return false;
+    }
     return true;
 }
 
@@ -53,14 +57,16 @@ class CommaSeparatedListItemPrefixGenerator
 {
   public:
     CommaSeparatedListItemPrefixGenerator() : mFirst(true) {}
+
   private:
     bool mFirst;
 
-    friend TInfoSinkBase &operator<<(TInfoSinkBase &out,
-                                     CommaSeparatedListItemPrefixGenerator &gen);
+    template <typename Stream>
+    friend Stream &operator<<(Stream &out, CommaSeparatedListItemPrefixGenerator &gen);
 };
 
-TInfoSinkBase &operator<<(TInfoSinkBase &out, CommaSeparatedListItemPrefixGenerator &gen)
+template <typename Stream>
+Stream &operator<<(Stream &out, CommaSeparatedListItemPrefixGenerator &gen)
 {
     if (gen.mFirst)
     {
@@ -94,8 +100,7 @@ TOutputGLSLBase::TOutputGLSLBase(TInfoSinkBase &objSink,
       mShaderVersion(shaderVersion),
       mOutput(output),
       mCompileOptions(compileOptions)
-{
-}
+{}
 
 void TOutputGLSLBase::writeInvariantQualifier(const TType &type)
 {
@@ -156,27 +161,22 @@ void TOutputGLSLBase::writeBuiltInFunctionTriplet(Visit visit,
     }
 }
 
-void TOutputGLSLBase::writeLayoutQualifier(TIntermTyped *variable)
+// Outputs what goes inside layout(), except for location and binding qualifiers, as they are
+// handled differently between GL GLSL and Vulkan GLSL.
+std::string TOutputGLSLBase::getCommonLayoutQualifiers(TIntermTyped *variable)
 {
-    const TType &type = variable->getType();
-
-    if (!NeedsToWriteLayoutQualifier(type))
-    {
-        return;
-    }
-
-    TInfoSinkBase &out                      = objSink();
-    const TLayoutQualifier &layoutQualifier = type.getLayoutQualifier();
-    out << "layout(";
-
+    std::ostringstream out;
     CommaSeparatedListItemPrefixGenerator listItemPrefix;
+
+    const TType &type                       = variable->getType();
+    const TLayoutQualifier &layoutQualifier = type.getLayoutQualifier();
 
     if (type.getQualifier() == EvqFragmentOut || type.getQualifier() == EvqVertexIn ||
         IsVarying(type.getQualifier()))
     {
-        if (layoutQualifier.location >= 0)
+        if (type.getQualifier() == EvqFragmentOut && layoutQualifier.index >= 0)
         {
-            out << listItemPrefix << "location = " << layoutQualifier.location;
+            out << listItemPrefix << "index = " << layoutQualifier.index;
         }
     }
 
@@ -185,14 +185,6 @@ void TOutputGLSLBase::writeLayoutQualifier(TIntermTyped *variable)
         if (layoutQualifier.yuv == true)
         {
             out << listItemPrefix << "yuv";
-        }
-    }
-
-    if (IsOpaqueType(type.getBasicType()))
-    {
-        if (layoutQualifier.binding >= 0)
-        {
-            out << listItemPrefix << "binding = " << layoutQualifier.binding;
         }
     }
 
@@ -211,10 +203,58 @@ void TOutputGLSLBase::writeLayoutQualifier(TIntermTyped *variable)
         out << listItemPrefix << "offset = " << layoutQualifier.offset;
     }
 
+    return out.str();
+}
+
+void TOutputGLSLBase::writeLayoutQualifier(TIntermTyped *variable)
+{
+    const TType &type = variable->getType();
+
+    if (!NeedsToWriteLayoutQualifier(type))
+    {
+        return;
+    }
+
+    if (type.getBasicType() == EbtInterfaceBlock)
+    {
+        const TInterfaceBlock *interfaceBlock = type.getInterfaceBlock();
+        declareInterfaceBlockLayout(interfaceBlock);
+        return;
+    }
+
+    TInfoSinkBase &out                      = objSink();
+    const TLayoutQualifier &layoutQualifier = type.getLayoutQualifier();
+    out << "layout(";
+
+    CommaSeparatedListItemPrefixGenerator listItemPrefix;
+
+    if (type.getQualifier() == EvqFragmentOut || type.getQualifier() == EvqVertexIn ||
+        IsVarying(type.getQualifier()))
+    {
+        if (layoutQualifier.location >= 0)
+        {
+            out << listItemPrefix << "location = " << layoutQualifier.location;
+        }
+    }
+
+    if (IsOpaqueType(type.getBasicType()))
+    {
+        if (layoutQualifier.binding >= 0)
+        {
+            out << listItemPrefix << "binding = " << layoutQualifier.binding;
+        }
+    }
+
+    std::string otherQualifiers = getCommonLayoutQualifiers(variable);
+    if (!otherQualifiers.empty())
+    {
+        out << listItemPrefix << otherQualifiers;
+    }
+
     out << ") ";
 }
 
-void TOutputGLSLBase::writeQualifier(TQualifier qualifier, const TSymbol *symbol)
+void TOutputGLSLBase::writeQualifier(TQualifier qualifier, const TType &type, const TSymbol *symbol)
 {
     const char *result = mapQualifierToString(qualifier);
     if (result && result[0] != '\0')
@@ -267,14 +307,9 @@ void TOutputGLSLBase::writeVariableType(const TType &type, const TSymbol *symbol
     {
         writeInvariantQualifier(type);
     }
-    if (type.getBasicType() == EbtInterfaceBlock)
-    {
-        const TInterfaceBlock *interfaceBlock = type.getInterfaceBlock();
-        declareInterfaceBlockLayout(interfaceBlock);
-    }
     if (qualifier != EvqTemporary && qualifier != EvqGlobal)
     {
-        writeQualifier(qualifier, symbol);
+        writeQualifier(qualifier, type, symbol);
     }
 
     const TMemoryQualifier &memoryQualifier = type.getMemoryQualifier();
@@ -581,7 +616,7 @@ bool TOutputGLSLBase::visitBinary(Visit visit, TIntermBinary *node)
                 const TIntermConstantUnion *index = node->getRight()->getAsConstantUnion();
                 const TField *field               = structure->fields()[index->getIConst(0)];
 
-                out << hashFieldName(structure, field->name());
+                out << hashFieldName(field);
                 visitChildren = false;
             }
             break;
@@ -593,9 +628,7 @@ bool TOutputGLSLBase::visitBinary(Visit visit, TIntermBinary *node)
                     node->getLeft()->getType().getInterfaceBlock();
                 const TIntermConstantUnion *index = node->getRight()->getAsConstantUnion();
                 const TField *field               = interfaceBlock->fields()[index->getIConst(0)];
-                ASSERT(interfaceBlock->symbolType() == SymbolType::UserDefined ||
-                       interfaceBlock->name() == "gl_PerVertex");
-                out << hashFieldName(interfaceBlock, field->name());
+                out << hashFieldName(field);
                 visitChildren = false;
             }
             break;
@@ -907,8 +940,8 @@ void TOutputGLSLBase::visitFunctionPrototype(TIntermFunctionPrototype *node)
 
 bool TOutputGLSLBase::visitAggregate(Visit visit, TIntermAggregate *node)
 {
-    bool visitChildren       = true;
-    TInfoSinkBase &out       = objSink();
+    bool visitChildren = true;
+    TInfoSinkBase &out = objSink();
     switch (node->getOp())
     {
         case EOpCallFunctionInAST:
@@ -975,6 +1008,14 @@ bool TOutputGLSLBase::visitAggregate(Visit visit, TIntermAggregate *node)
         case EOpMemoryBarrierImage:
         case EOpMemoryBarrierShared:
         case EOpGroupMemoryBarrier:
+        case EOpAtomicAdd:
+        case EOpAtomicMin:
+        case EOpAtomicMax:
+        case EOpAtomicAnd:
+        case EOpAtomicOr:
+        case EOpAtomicXor:
+        case EOpAtomicExchange:
+        case EOpAtomicCompSwap:
         case EOpEmitVertex:
         case EOpEndPrimitive:
             writeBuiltInFunctionTriplet(visit, node->getOp(), node->getUseEmulatedFunction());
@@ -1105,6 +1146,40 @@ void TOutputGLSLBase::visitCodeBlock(TIntermBlock *node)
     }
 }
 
+void TOutputGLSLBase::visitPreprocessorDirective(TIntermPreprocessorDirective *node)
+{
+    TInfoSinkBase &out = objSink();
+
+    out << "\n";
+
+    switch (node->getDirective())
+    {
+        case PreprocessorDirective::Define:
+            out << "#define";
+            break;
+        case PreprocessorDirective::Endif:
+            out << "#endif";
+            break;
+        case PreprocessorDirective::If:
+            out << "#if";
+            break;
+        case PreprocessorDirective::Ifdef:
+            out << "#ifdef";
+            break;
+
+        default:
+            UNREACHABLE();
+            break;
+    }
+
+    if (!node->getCommand().empty())
+    {
+        out << " " << node->getCommand();
+    }
+
+    out << "\n";
+}
+
 ImmutableString TOutputGLSLBase::getTypeName(const TType &type)
 {
     return GetTypeName(type, mHashFunction, &mNameMap);
@@ -1115,18 +1190,15 @@ ImmutableString TOutputGLSLBase::hashName(const TSymbol *symbol)
     return HashName(symbol, mHashFunction, &mNameMap);
 }
 
-ImmutableString TOutputGLSLBase::hashFieldName(const TSymbol *containingStruct,
-                                               const ImmutableString &fieldName)
+ImmutableString TOutputGLSLBase::hashFieldName(const TField *field)
 {
-    if (containingStruct->symbolType() == SymbolType::UserDefined ||
-        containingStruct->symbolType() == SymbolType::Empty)
+    ASSERT(field->symbolType() != SymbolType::Empty);
+    if (field->symbolType() == SymbolType::UserDefined)
     {
-        return HashName(fieldName, mHashFunction, &mNameMap);
+        return HashName(field->name(), mHashFunction, &mNameMap);
     }
-    else
-    {
-        return fieldName;
-    }
+
+    return field->name();
 }
 
 ImmutableString TOutputGLSLBase::hashFunctionNameIfNeeded(const TFunction *func)
@@ -1169,7 +1241,7 @@ void TOutputGLSLBase::declareStruct(const TStructure *structure)
         const TField *field = fields[i];
         if (writeVariablePrecision(field->type()->getPrecision()))
             out << " ";
-        out << getTypeName(*field->type()) << " " << hashFieldName(structure, field->name());
+        out << getTypeName(*field->type()) << " " << hashFieldName(field);
         if (field->type()->isArray())
             out << ArrayString(*field->type());
         out << ";\n";
@@ -1254,7 +1326,7 @@ void TOutputGLSLBase::declareInterfaceBlock(const TInterfaceBlock *interfaceBloc
 
         if (writeVariablePrecision(field->type()->getPrecision()))
             out << " ";
-        out << getTypeName(*field->type()) << " " << hashFieldName(interfaceBlock, field->name());
+        out << getTypeName(*field->type()) << " " << hashFieldName(field);
         if (field->type()->isArray())
             out << ArrayString(*field->type());
         out << ";\n";
@@ -1319,7 +1391,7 @@ bool NeedsToWriteLayoutQualifier(const TType &type)
 {
     if (type.getBasicType() == EbtInterfaceBlock)
     {
-        return false;
+        return true;
     }
 
     const TLayoutQualifier &layoutQualifier = type.getLayoutQualifier();

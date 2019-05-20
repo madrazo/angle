@@ -10,8 +10,8 @@
 #define LIBANGLE_RENDERER_GL_GLX_WINDOWSURFACEGLX_H_
 
 #include "libANGLE/renderer/gl/glx/DisplayGLX.h"
-#include "libANGLE/renderer/gl/glx/platform_glx.h"
 #include "libANGLE/renderer/gl/glx/SurfaceGLX.h"
+#include "libANGLE/renderer/gl/glx/platform_glx.h"
 
 namespace rx
 {
@@ -25,14 +25,13 @@ class WindowSurfaceGLX : public SurfaceGLX
     WindowSurfaceGLX(const egl::SurfaceState &state,
                      const FunctionsGLX &glx,
                      DisplayGLX *glxDisplay,
-                     RendererGL *renderer,
                      Window window,
                      Display *display,
                      glx::FBConfig fbConfig);
     ~WindowSurfaceGLX() override;
 
     egl::Error initialize(const egl::Display *display) override;
-    egl::Error makeCurrent() override;
+    egl::Error makeCurrent(const gl::Context *context) override;
 
     egl::Error swap(const gl::Context *context) override;
     egl::Error postSubBuffer(const gl::Context *context,
@@ -75,4 +74,4 @@ class WindowSurfaceGLX : public SurfaceGLX
 
 }  // namespace rx
 
-#endif // LIBANGLE_RENDERER_GL_GLX_WINDOWSURFACEGLX_H_
+#endif  // LIBANGLE_RENDERER_GL_GLX_WINDOWSURFACEGLX_H_

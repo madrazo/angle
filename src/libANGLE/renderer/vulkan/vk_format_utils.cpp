@@ -8,99 +8,184 @@
 
 #include "libANGLE/renderer/vulkan/vk_format_utils.h"
 
+#include "libANGLE/Texture.h"
 #include "libANGLE/formatutils.h"
 #include "libANGLE/renderer/load_functions_table.h"
+#include "libANGLE/renderer/vulkan/RendererVk.h"
 #include "libANGLE/renderer/vulkan/vk_caps_utils.h"
 
 namespace rx
 {
 namespace
 {
-constexpr VkFormatFeatureFlags kNecessaryBitsFullSupportDepthStencil =
-    VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
-    VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
-constexpr VkFormatFeatureFlags kNecessaryBitsFullSupportColor =
-    VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
-    VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
-
-bool HasFormatFeatureBits(const VkFormatFeatureFlags featureBits,
-                          const VkFormatProperties &formatProperties)
+void AddSampleCounts(VkSampleCountFlags sampleCounts, gl::SupportedSampleSet *outSet)
 {
-    return IsMaskFlagSet(formatProperties.optimalTilingFeatures, featureBits);
+    // The possible bits are VK_SAMPLE_COUNT_n_BIT = n, with n = 1 << b.  At the time of this
+    // writing, b is in [0, 6], however, we test all 32 bits in case the enum is extended.
+    for (unsigned int i = 0; i < 32; ++i)
+    {
+        if ((sampleCounts & (1 << i)) != 0)
+        {
+            outSet->insert(1 << i);
+        }
+    }
 }
 
-void FillTextureFormatCaps(const VkFormatProperties &formatProperties,
-                           gl::TextureCaps *outTextureCaps)
+void FillTextureFormatCaps(RendererVk *renderer, VkFormat format, gl::TextureCaps *outTextureCaps)
 {
+    const VkPhysicalDeviceLimits &physicalDeviceLimits =
+        renderer->getPhysicalDeviceProperties().limits;
+    bool hasColorAttachmentFeatureBit =
+        renderer->hasImageFormatFeatureBits(format, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT);
+    bool hasDepthAttachmentFeatureBit =
+        renderer->hasImageFormatFeatureBits(format, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
+
     outTextureCaps->texturable =
-        HasFormatFeatureBits(VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, formatProperties);
-    outTextureCaps->filterable =
-        HasFormatFeatureBits(VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT, formatProperties);
-    outTextureCaps->renderable =
-        HasFormatFeatureBits(VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT, formatProperties) ||
-        HasFormatFeatureBits(VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT, formatProperties);
+        renderer->hasImageFormatFeatureBits(format, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
+    outTextureCaps->filterable = renderer->hasImageFormatFeatureBits(
+        format, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
+    outTextureCaps->textureAttachment =
+        hasColorAttachmentFeatureBit || hasDepthAttachmentFeatureBit;
+    outTextureCaps->renderbuffer = outTextureCaps->textureAttachment;
+
+    if (outTextureCaps->renderbuffer)
+    {
+        if (hasColorAttachmentFeatureBit)
+        {
+            AddSampleCounts(physicalDeviceLimits.framebufferColorSampleCounts,
+                            &outTextureCaps->sampleCounts);
+        }
+        if (hasDepthAttachmentFeatureBit)
+        {
+            AddSampleCounts(physicalDeviceLimits.framebufferDepthSampleCounts,
+                            &outTextureCaps->sampleCounts);
+            AddSampleCounts(physicalDeviceLimits.framebufferStencilSampleCounts,
+                            &outTextureCaps->sampleCounts);
+        }
+    }
 }
 
-void GetFormatProperties(VkPhysicalDevice physicalDevice,
-                         VkFormat vkFormat,
-                         VkFormatProperties *propertiesOut)
+bool HasFullBufferFormatSupport(RendererVk *renderer, VkFormat vkFormat)
 {
-    // Try filling out the info from our hard coded format data, if we can't find the
-    // information we need, we'll make the call to Vulkan.
-    const VkFormatProperties &formatProperties = vk::GetMandatoryFormatSupport(vkFormat);
-
-    // Once we filled what we could with the mandatory texture caps, we verify if
-    // all the bits we need to satify all our checks are present, and if so we can
-    // skip the device call.
-    if (!IsMaskFlagSet(formatProperties.optimalTilingFeatures, kNecessaryBitsFullSupportColor) &&
-        !IsMaskFlagSet(formatProperties.optimalTilingFeatures,
-                       kNecessaryBitsFullSupportDepthStencil))
-    {
-        vkGetPhysicalDeviceFormatProperties(physicalDevice, vkFormat, propertiesOut);
-    }
-    else
-    {
-        *propertiesOut = formatProperties;
-    }
+    return renderer->hasBufferFormatFeatureBits(vkFormat, VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
 }
+
+using SupportTest = bool (*)(RendererVk *renderer, VkFormat vkFormat);
+
+template <class FormatInitInfo>
+int FindSupportedFormat(RendererVk *renderer,
+                        const FormatInitInfo *info,
+                        int numInfo,
+                        SupportTest hasSupport)
+{
+    ASSERT(numInfo > 0);
+    const int last = numInfo - 1;
+
+    for (int i = 0; i < last; ++i)
+    {
+        ASSERT(info[i].format != angle::FormatID::NONE);
+        if (hasSupport(renderer, info[i].vkFormat))
+            return i;
+    }
+
+    // List must contain a supported item.  We failed on all the others so the last one must be it.
+    ASSERT(info[last].format != angle::FormatID::NONE);
+    ASSERT(hasSupport(renderer, info[last].vkFormat));
+    return last;
+}
+
 }  // anonymous namespace
 
 namespace vk
 {
-bool HasFullFormatSupport(VkPhysicalDevice physicalDevice, VkFormat vkFormat)
-{
-    VkFormatProperties formatProperties;
-    GetFormatProperties(physicalDevice, vkFormat, &formatProperties);
-
-    constexpr uint32_t kBitsColor =
-        (VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
-         VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT);
-    constexpr uint32_t kBitsDepth = (VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
-
-    return HasFormatFeatureBits(kBitsColor, formatProperties) ||
-           HasFormatFeatureBits(kBitsDepth, formatProperties);
-}
 
 // Format implementation.
 Format::Format()
-    : internalFormat(GL_NONE),
-      textureFormatID(angle::Format::ID::NONE),
-      vkTextureFormat(VK_FORMAT_UNDEFINED),
-      bufferFormatID(angle::Format::ID::NONE),
+    : angleFormatID(angle::FormatID::NONE),
+      internalFormat(GL_NONE),
+      imageFormatID(angle::FormatID::NONE),
+      vkImageFormat(VK_FORMAT_UNDEFINED),
+      bufferFormatID(angle::FormatID::NONE),
       vkBufferFormat(VK_FORMAT_UNDEFINED),
-      dataInitializerFunction(nullptr),
-      loadFunctions()
+      imageInitializerFunction(nullptr),
+      textureLoadFunctions(),
+      vertexLoadRequiresConversion(false),
+      vkBufferFormatIsPacked(false),
+      vkSupportsStorageBuffer(false),
+      vkFormatIsInt(false),
+      vkFormatIsUnsigned(false)
+{}
+
+void Format::initImageFallback(RendererVk *renderer, const ImageFormatInitInfo *info, int numInfo)
 {
+    size_t skip = renderer->getFeatures().forceFallbackFormat.enabled ? 1 : 0;
+    int i = FindSupportedFormat(renderer, info + skip, numInfo - skip, HasFullTextureFormatSupport);
+    i += skip;
+
+    imageFormatID            = info[i].format;
+    vkImageFormat            = info[i].vkFormat;
+    imageInitializerFunction = info[i].initializer;
 }
 
-const angle::Format &Format::textureFormat() const
+void Format::initBufferFallback(RendererVk *renderer, const BufferFormatInitInfo *info, int numInfo)
 {
-    return angle::Format::Get(textureFormatID);
+    size_t skip = renderer->getFeatures().forceFallbackFormat.enabled ? 1 : 0;
+    int i = FindSupportedFormat(renderer, info + skip, numInfo - skip, HasFullBufferFormatSupport);
+    i += skip;
+
+    bufferFormatID               = info[i].format;
+    vkBufferFormat               = info[i].vkFormat;
+    vkBufferFormatIsPacked       = info[i].vkFormatIsPacked;
+    vertexLoadFunction           = info[i].vertexLoadFunction;
+    vertexLoadRequiresConversion = info[i].vertexLoadRequiresConversion;
 }
 
-const angle::Format &Format::bufferFormat() const
+size_t Format::getImageCopyBufferAlignment() const
 {
-    return angle::Format::Get(bufferFormatID);
+    // vkCmdCopyBufferToImage must have an offset that is a multiple of 4 as well as a multiple
+    // of the pixel block size.
+    // https://www.khronos.org/registry/vulkan/specs/1.0/man/html/VkBufferImageCopy.html
+    //
+    // We need lcm(4, blockSize) (lcm = least common multiplier).  Since 4 is constant, this
+    // can be calculated as:
+    //
+    //                      | blockSize             blockSize % 4 == 0
+    //                      | 4 * blockSize         blockSize % 4 == 1
+    // lcm(4, blockSize) = <
+    //                      | 2 * blockSize         blockSize % 4 == 2
+    //                      | 4 * blockSize         blockSize % 4 == 3
+    //
+    // This means:
+    //
+    // - blockSize % 2 != 0 gives a 4x multiplier
+    // - else blockSize % 4 != 0 gives a 2x multiplier
+    // - else there's no multiplier.
+    //
+    const angle::Format &format = imageFormat();
+
+    if (!format.isBlock)
+    {
+        // Currently, 4 is sufficient for any known non-block format.
+        return 4;
+    }
+
+    const size_t blockSize  = format.pixelBytes;
+    const size_t multiplier = blockSize % 2 != 0 ? 4 : blockSize % 4 != 0 ? 2 : 1;
+    const size_t alignment  = multiplier * blockSize;
+
+    return alignment;
+}
+
+bool Format::hasEmulatedImageChannels() const
+{
+    const angle::Format &angleFmt   = angleFormat();
+    const angle::Format &textureFmt = imageFormat();
+
+    return (angleFmt.alphaBits == 0 && textureFmt.alphaBits > 0) ||
+           (angleFmt.blueBits == 0 && textureFmt.blueBits > 0) ||
+           (angleFmt.greenBits == 0 && textureFmt.greenBits > 0) ||
+           (angleFmt.depthBits == 0 && textureFmt.depthBits > 0) ||
+           (angleFmt.stencilBits == 0 && textureFmt.stencilBits > 0);
 }
 
 bool operator==(const Format &lhs, const Format &rhs)
@@ -114,41 +199,40 @@ bool operator!=(const Format &lhs, const Format &rhs)
 }
 
 // FormatTable implementation.
-FormatTable::FormatTable()
-{
-}
+FormatTable::FormatTable() {}
 
-FormatTable::~FormatTable()
-{
-}
+FormatTable::~FormatTable() {}
 
-void FormatTable::initialize(VkPhysicalDevice physicalDevice,
+void FormatTable::initialize(RendererVk *renderer,
                              gl::TextureCapsMap *outTextureCapsMap,
                              std::vector<GLenum> *outCompressedTextureFormats)
 {
     for (size_t formatIndex = 0; formatIndex < angle::kNumANGLEFormats; ++formatIndex)
     {
-        const auto formatID              = static_cast<angle::Format::ID>(formatIndex);
+        vk::Format &format               = mFormatData[formatIndex];
+        const auto formatID              = static_cast<angle::FormatID>(formatIndex);
         const angle::Format &angleFormat = angle::Format::Get(formatID);
-        mFormatData[formatIndex].initialize(physicalDevice, angleFormat);
-        const GLenum internalFormat = mFormatData[formatIndex].internalFormat;
-        mFormatData[formatIndex].loadFunctions =
-            GetLoadFunctionsMap(internalFormat, mFormatData[formatIndex].textureFormatID);
 
-        if (!mFormatData[formatIndex].valid())
+        format.initialize(renderer, angleFormat);
+        const GLenum internalFormat = format.internalFormat;
+        format.angleFormatID        = formatID;
+
+        if (!format.valid())
         {
             continue;
         }
 
-        const VkFormat vkFormat = mFormatData[formatIndex].vkTextureFormat;
+        format.vkSupportsStorageBuffer = renderer->hasBufferFormatFeatureBits(
+            format.vkBufferFormat, VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT);
 
-        // Try filling out the info from our hard coded format data, if we can't find the
-        // information we need, we'll make the call to Vulkan.
-        VkFormatProperties formatProperties;
-        GetFormatProperties(physicalDevice, vkFormat, &formatProperties);
         gl::TextureCaps textureCaps;
-        FillTextureFormatCaps(formatProperties, &textureCaps);
+        FillTextureFormatCaps(renderer, format.vkImageFormat, &textureCaps);
         outTextureCapsMap->set(formatID, textureCaps);
+
+        if (textureCaps.texturable)
+        {
+            format.textureLoadFunctions = GetLoadFunctionsMap(internalFormat, format.imageFormatID);
+        }
 
         if (angleFormat.isBlock)
         {
@@ -157,276 +241,109 @@ void FormatTable::initialize(VkPhysicalDevice physicalDevice,
     }
 }
 
-const Format &FormatTable::operator[](GLenum internalFormat) const
+VkImageUsageFlags GetMaximalImageUsageFlags(RendererVk *renderer, VkFormat format)
 {
-    angle::Format::ID formatID = angle::Format::InternalFormatToID(internalFormat);
-    return mFormatData[static_cast<size_t>(formatID)];
-}
-
-// TODO(jmadill): This is temporary. Figure out how to handle format conversions.
-VkFormat GetNativeVertexFormat(gl::VertexFormatType vertexFormat)
-{
-    switch (vertexFormat)
-    {
-        case gl::VERTEX_FORMAT_INVALID:
-            UNREACHABLE();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SBYTE1:
-            return VK_FORMAT_R8_SINT;
-        case gl::VERTEX_FORMAT_SBYTE1_NORM:
-            return VK_FORMAT_R8_SNORM;
-        case gl::VERTEX_FORMAT_SBYTE2:
-            return VK_FORMAT_R8G8_SINT;
-        case gl::VERTEX_FORMAT_SBYTE2_NORM:
-            return VK_FORMAT_R8G8_SNORM;
-        case gl::VERTEX_FORMAT_SBYTE3:
-            return VK_FORMAT_R8G8B8_SINT;
-        case gl::VERTEX_FORMAT_SBYTE3_NORM:
-            return VK_FORMAT_R8G8B8_SNORM;
-        case gl::VERTEX_FORMAT_SBYTE4:
-            return VK_FORMAT_R8G8B8A8_SINT;
-        case gl::VERTEX_FORMAT_SBYTE4_NORM:
-            return VK_FORMAT_R8G8B8A8_SNORM;
-        case gl::VERTEX_FORMAT_UBYTE1:
-            return VK_FORMAT_R8_UINT;
-        case gl::VERTEX_FORMAT_UBYTE1_NORM:
-            return VK_FORMAT_R8_UNORM;
-        case gl::VERTEX_FORMAT_UBYTE2:
-            return VK_FORMAT_R8G8_UINT;
-        case gl::VERTEX_FORMAT_UBYTE2_NORM:
-            return VK_FORMAT_R8G8_UNORM;
-        case gl::VERTEX_FORMAT_UBYTE3:
-            return VK_FORMAT_R8G8B8_UINT;
-        case gl::VERTEX_FORMAT_UBYTE3_NORM:
-            return VK_FORMAT_R8G8B8_UNORM;
-        case gl::VERTEX_FORMAT_UBYTE4:
-            return VK_FORMAT_R8G8B8A8_UINT;
-        case gl::VERTEX_FORMAT_UBYTE4_NORM:
-            return VK_FORMAT_R8G8B8A8_UNORM;
-        case gl::VERTEX_FORMAT_SSHORT1:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SSHORT1_NORM:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SSHORT2:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SSHORT2_NORM:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SSHORT3:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SSHORT3_NORM:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SSHORT4:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SSHORT4_NORM:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_USHORT1:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_USHORT1_NORM:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_USHORT2:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_USHORT2_NORM:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_USHORT3:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_USHORT3_NORM:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_USHORT4:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_USHORT4_NORM:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SINT1:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SINT1_NORM:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SINT2:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SINT2_NORM:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SINT3:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SINT3_NORM:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SINT4:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SINT4_NORM:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_UINT1:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_UINT1_NORM:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_UINT2:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_UINT2_NORM:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_UINT3:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_UINT3_NORM:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_UINT4:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_UINT4_NORM:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SBYTE1_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SBYTE2_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SBYTE3_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SBYTE4_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_UBYTE1_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_UBYTE2_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_UBYTE3_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_UBYTE4_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SSHORT1_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SSHORT2_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SSHORT3_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SSHORT4_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_USHORT1_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_USHORT2_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_USHORT3_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_USHORT4_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SINT1_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SINT2_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SINT3_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SINT4_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_UINT1_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_UINT2_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_UINT3_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_UINT4_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_FIXED1:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_FIXED2:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_FIXED3:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_FIXED4:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_HALF1:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_HALF2:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_HALF3:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_HALF4:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_FLOAT1:
-            return VK_FORMAT_R32_SFLOAT;
-        case gl::VERTEX_FORMAT_FLOAT2:
-            return VK_FORMAT_R32G32_SFLOAT;
-        case gl::VERTEX_FORMAT_FLOAT3:
-            return VK_FORMAT_R32G32B32_SFLOAT;
-        case gl::VERTEX_FORMAT_FLOAT4:
-            return VK_FORMAT_R32G32B32A32_SFLOAT;
-        case gl::VERTEX_FORMAT_SINT210:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_UINT210:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SINT210_NORM:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_UINT210_NORM:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_SINT210_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        case gl::VERTEX_FORMAT_UINT210_INT:
-            UNIMPLEMENTED();
-            return VK_FORMAT_UNDEFINED;
-        default:
-            UNREACHABLE();
-            return VK_FORMAT_UNDEFINED;
-    }
+    constexpr VkFormatFeatureFlags kImageUsageFeatureBits =
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
+        VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT |
+        VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    VkFormatFeatureFlags featureBits =
+        renderer->getImageFormatFeatureBits(format, kImageUsageFeatureBits);
+    VkImageUsageFlags imageUsageFlags = 0;
+    if (featureBits & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)
+        imageUsageFlags |= VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (featureBits & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)
+        imageUsageFlags |= VK_IMAGE_USAGE_STORAGE_BIT;
+    if (featureBits & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)
+        imageUsageFlags |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if (featureBits & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
+        imageUsageFlags |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    if (featureBits & VK_FORMAT_FEATURE_TRANSFER_SRC_BIT)
+        imageUsageFlags |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    if (featureBits & VK_FORMAT_FEATURE_TRANSFER_DST_BIT)
+        imageUsageFlags |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    imageUsageFlags |= VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+    return imageUsageFlags;
 }
 
 }  // namespace vk
 
+bool HasFullTextureFormatSupport(RendererVk *renderer, VkFormat vkFormat)
+{
+    constexpr uint32_t kBitsColor = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                                    VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+                                    VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
+    constexpr uint32_t kBitsDepth = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+
+    return renderer->hasImageFormatFeatureBits(vkFormat, kBitsColor) ||
+           renderer->hasImageFormatFeatureBits(vkFormat, kBitsDepth);
+}
+
+size_t GetVertexInputAlignment(const vk::Format &format)
+{
+    const angle::Format &bufferFormat = format.bufferFormat();
+    size_t pixelBytes                 = bufferFormat.pixelBytes;
+    return format.vkBufferFormatIsPacked ? pixelBytes : (pixelBytes / bufferFormat.channelCount());
+}
+
+void MapSwizzleState(const vk::Format &format,
+                     const gl::SwizzleState &swizzleState,
+                     gl::SwizzleState *swizzleStateOut)
+{
+    const angle::Format &angleFormat = format.angleFormat();
+
+    if (angleFormat.isBlock)
+    {
+        // No need to override swizzles for compressed images, as they are not emulated.
+        // Either way, angleFormat.xBits (with x in {red, green, blue, alpha}) is zero for blocked
+        // formats so the following code would incorrectly turn its swizzle to (0, 0, 0, 1).
+        return;
+    }
+
+    switch (format.internalFormat)
+    {
+        case GL_LUMINANCE8_OES:
+            swizzleStateOut->swizzleRed   = swizzleState.swizzleRed;
+            swizzleStateOut->swizzleGreen = swizzleState.swizzleRed;
+            swizzleStateOut->swizzleBlue  = swizzleState.swizzleRed;
+            swizzleStateOut->swizzleAlpha = GL_ONE;
+            break;
+        case GL_LUMINANCE8_ALPHA8_OES:
+            swizzleStateOut->swizzleRed   = swizzleState.swizzleRed;
+            swizzleStateOut->swizzleGreen = swizzleState.swizzleRed;
+            swizzleStateOut->swizzleBlue  = swizzleState.swizzleRed;
+            swizzleStateOut->swizzleAlpha = swizzleState.swizzleGreen;
+            break;
+        case GL_ALPHA8_OES:
+            swizzleStateOut->swizzleRed   = GL_ZERO;
+            swizzleStateOut->swizzleGreen = GL_ZERO;
+            swizzleStateOut->swizzleBlue  = GL_ZERO;
+            swizzleStateOut->swizzleAlpha = swizzleState.swizzleRed;
+            break;
+        default:
+            if (angleFormat.hasDepthOrStencilBits())
+            {
+                swizzleStateOut->swizzleRed =
+                    angleFormat.depthBits > 0 ? swizzleState.swizzleRed : GL_ZERO;
+                swizzleStateOut->swizzleGreen =
+                    angleFormat.depthBits > 0 ? swizzleState.swizzleRed : GL_ZERO;
+                swizzleStateOut->swizzleBlue =
+                    angleFormat.depthBits > 0 ? swizzleState.swizzleRed : GL_ZERO;
+                swizzleStateOut->swizzleAlpha = GL_ONE;
+            }
+            else
+            {
+                // Set any missing channel to default in case the emulated format has that channel.
+                swizzleStateOut->swizzleRed =
+                    angleFormat.redBits > 0 ? swizzleState.swizzleRed : GL_ZERO;
+                swizzleStateOut->swizzleGreen =
+                    angleFormat.greenBits > 0 ? swizzleState.swizzleGreen : GL_ZERO;
+                swizzleStateOut->swizzleBlue =
+                    angleFormat.blueBits > 0 ? swizzleState.swizzleBlue : GL_ZERO;
+                swizzleStateOut->swizzleAlpha =
+                    angleFormat.alphaBits > 0 ? swizzleState.swizzleAlpha : GL_ONE;
+            }
+            break;
+    }
+}
 }  // namespace rx

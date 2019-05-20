@@ -11,6 +11,7 @@
 #define LIBANGLE_RENDERER_GL_CGL_IOSURFACESURFACECGL_H_
 
 #include "libANGLE/renderer/gl/SurfaceGL.h"
+#include "libANGLE/renderer/gl/cgl/DisplayCGL.h"
 
 struct __IOSurface;
 typedef __IOSurface *IOSurfaceRef;
@@ -18,7 +19,7 @@ typedef __IOSurface *IOSurfaceRef;
 namespace egl
 {
 class AttributeMap;
-}  // namespace gl
+}  // namespace egl
 
 namespace rx
 {
@@ -31,14 +32,14 @@ class IOSurfaceSurfaceCGL : public SurfaceGL
 {
   public:
     IOSurfaceSurfaceCGL(const egl::SurfaceState &state,
-                        RendererGL *renderer,
-                        DisplayCGL *display,
+                        CGLContextObj cglContext,
                         EGLClientBuffer buffer,
                         const egl::AttributeMap &attribs);
     ~IOSurfaceSurfaceCGL() override;
 
     egl::Error initialize(const egl::Display *display) override;
-    egl::Error makeCurrent() override;
+    egl::Error makeCurrent(const gl::Context *context) override;
+    egl::Error unMakeCurrent(const gl::Context *context) override;
 
     egl::Error swap(const gl::Context *context) override;
     egl::Error postSubBuffer(const gl::Context *context,
@@ -60,11 +61,11 @@ class IOSurfaceSurfaceCGL : public SurfaceGL
     EGLint getSwapBehavior() const override;
 
     static bool validateAttributes(EGLClientBuffer buffer, const egl::AttributeMap &attribs);
+    FramebufferImpl *createDefaultFramebuffer(const gl::Context *context,
+                                              const gl::FramebufferState &state) override;
 
   private:
-    DisplayCGL *mDisplay;
-    RendererGL *mRenderer;
-    StateManagerGL *mStateManager;
+    CGLContextObj mCGLContext;
     IOSurfaceRef mIOSurface;
     int mWidth;
     int mHeight;

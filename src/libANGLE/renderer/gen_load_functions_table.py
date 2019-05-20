@@ -7,6 +7,7 @@
 #  Code generation for the load function tables used for texture formats. These mappings are
 #  not renderer specific. The mappings are done from the GL internal format, to the ANGLE
 #  format ID, and then for the specific data type.
+#  NOTE: don't run this script directly. Run scripts/run_code_generation.py.
 #
 
 import json, sys
@@ -75,7 +76,7 @@ void UnreachableLoadFunction(size_t width,
 
 {load_functions_data}}}  // namespace
 
-LoadFunctionMap GetLoadFunctionsMap(GLenum {internal_format}, Format::ID {angle_format})
+LoadFunctionMap GetLoadFunctionsMap(GLenum {internal_format}, FormatID {angle_format})
 {{
     // clang-format off
     switch ({internal_format})
@@ -85,6 +86,7 @@ LoadFunctionMap GetLoadFunctionsMap(GLenum {internal_format}, Format::ID {angle_
             break;
     }}
     // clang-format on
+    ASSERT(internalFormat == GL_NONE || angleFormat == angle::FormatID::NONE);
     static LoadFunctionMap emptyLoadFunctionsMap;
     return emptyLoadFunctionsMap;
 
@@ -97,11 +99,14 @@ internal_format_param = 'internalFormat'
 angle_format_param = 'angleFormat'
 angle_format_unknown = 'NONE'
 
+
 def load_functions_name(internal_format, angle_format):
     return internal_format[3:] + "_to_" + angle_format
 
+
 def unknown_func_name(internal_format):
     return load_functions_name(internal_format, "default")
+
 
 def get_load_func(func_name, type_functions):
     snippet = "LoadImageFunctionInfo " + func_name + "(GLenum type)\n"
@@ -121,9 +126,12 @@ def get_load_func(func_name, type_functions):
 
     return snippet
 
+
 def get_unknown_load_func(angle_to_type_map, internal_format):
     assert angle_format_unknown in angle_to_type_map
-    return get_load_func(unknown_func_name(internal_format), angle_to_type_map[angle_format_unknown])
+    return get_load_func(
+        unknown_func_name(internal_format), angle_to_type_map[angle_format_unknown])
+
 
 def parse_json(json_data):
     table_data = ''
@@ -134,7 +142,8 @@ def parse_json(json_data):
 
         table_data += s + 'case ' + internal_format + ':\n'
 
-        do_switch = len(angle_to_type_map) > 1 or angle_to_type_map.keys()[0] != angle_format_unknown
+        do_switch = len(
+            angle_to_type_map) > 1 or angle_to_type_map.keys()[0] != angle_format_unknown
 
         if do_switch:
             table_data += s + '{\n'
@@ -151,7 +160,7 @@ def parse_json(json_data):
             func_name = load_functions_name(internal_format, angle_format)
 
             # Main case statements
-            table_data += s + 'case Format::ID::' + angle_format + ':\n'
+            table_data += s + 'case FormatID::' + angle_format + ':\n'
             table_data += s + '    return ' + func_name + ';\n'
 
             if angle_format_unknown in angle_to_type_map:
@@ -184,15 +193,38 @@ def parse_json(json_data):
 
     return table_data, load_functions_data
 
-json_data = angle_format.load_json('load_functions_data.json')
 
-switch_data, load_functions_data = parse_json(json_data)
-output = template.format(internal_format = internal_format_param,
-                         angle_format = angle_format_param,
-                         switch_data = switch_data,
-                         load_functions_data = load_functions_data,
-                         copyright_year = date.today().year)
+def main():
 
-with open('load_functions_table_autogen.cpp', 'wt') as out_file:
-    out_file.write(output)
-    out_file.close()
+    # auto_script parameters.
+    if len(sys.argv) > 1:
+        inputs = ['load_functions_data.json']
+        outputs = ['load_functions_table_autogen.cpp']
+
+        if sys.argv[1] == 'inputs':
+            print ','.join(inputs)
+        elif sys.argv[1] == 'outputs':
+            print ','.join(outputs)
+        else:
+            print('Invalid script parameters')
+            return 1
+        return 0
+
+    json_data = angle_format.load_json('load_functions_data.json')
+
+    switch_data, load_functions_data = parse_json(json_data)
+    output = template.format(
+        internal_format=internal_format_param,
+        angle_format=angle_format_param,
+        switch_data=switch_data,
+        load_functions_data=load_functions_data,
+        copyright_year=date.today().year)
+
+    with open('load_functions_table_autogen.cpp', 'wt') as out_file:
+        out_file.write(output)
+        out_file.close()
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

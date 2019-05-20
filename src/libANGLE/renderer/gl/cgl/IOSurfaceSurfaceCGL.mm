@@ -65,14 +65,11 @@ int FindIOSurfaceFormatIndex(GLenum internalFormat, GLenum type)
 }  // anonymous namespace
 
 IOSurfaceSurfaceCGL::IOSurfaceSurfaceCGL(const egl::SurfaceState &state,
-                                         RendererGL *renderer,
-                                         DisplayCGL *display,
+                                         CGLContextObj cglContext,
                                          EGLClientBuffer buffer,
                                          const egl::AttributeMap &attribs)
-    : SurfaceGL(state, renderer),
-      mDisplay(display),
-      mRenderer(renderer),
-      mStateManager(renderer->getStateManager()),
+    : SurfaceGL(state),
+      mCGLContext(cglContext),
       mIOSurface(nullptr),
       mWidth(0),
       mHeight(0),
@@ -108,15 +105,19 @@ egl::Error IOSurfaceSurfaceCGL::initialize(const egl::Display *display)
     return egl::NoError();
 }
 
-egl::Error IOSurfaceSurfaceCGL::makeCurrent()
+egl::Error IOSurfaceSurfaceCGL::makeCurrent(const gl::Context *context)
 {
-    // Make current is not supported on IOSurface pbuffers.
-    return egl::EglBadSurface();
+    return egl::NoError();
+}
+
+egl::Error IOSurfaceSurfaceCGL::unMakeCurrent(const gl::Context *context)
+{
+    GetFunctionsGL(context)->flush();
+    return egl::NoError();
 }
 
 egl::Error IOSurfaceSurfaceCGL::swap(const gl::Context *context)
 {
-    UNREACHABLE();
     return egl::NoError();
 }
 
@@ -140,14 +141,16 @@ egl::Error IOSurfaceSurfaceCGL::bindTexImage(const gl::Context *context,
                                              gl::Texture *texture,
                                              EGLint buffer)
 {
+    StateManagerGL *stateManager = GetStateManagerGL(context);
+
     const TextureGL *textureGL = GetImplAs<TextureGL>(texture);
     GLuint textureID           = textureGL->getTextureID();
-    mStateManager->bindTexture(gl::TextureType::Rectangle, textureID);
+    stateManager->bindTexture(gl::TextureType::Rectangle, textureID);
 
     const auto &format = kIOSurfaceFormats[mFormatIndex];
-    auto error         = CGLTexImageIOSurface2D(
-        mDisplay->getCGLContext(), GL_TEXTURE_RECTANGLE, format.nativeFormat, mWidth, mHeight,
-        format.nativeInternalFormat, format.nativeType, mIOSurface, mPlane);
+    auto error = CGLTexImageIOSurface2D(mCGLContext, GL_TEXTURE_RECTANGLE, format.nativeFormat,
+                                        mWidth, mHeight, format.nativeInternalFormat,
+                                        format.nativeType, mIOSurface, mPlane);
 
     if (error != kCGLNoError)
     {
@@ -159,11 +162,8 @@ egl::Error IOSurfaceSurfaceCGL::bindTexImage(const gl::Context *context,
 
 egl::Error IOSurfaceSurfaceCGL::releaseTexImage(const gl::Context *context, EGLint buffer)
 {
-    gl::Error error = mRenderer->flush();
-    if (error.isError())
-    {
-        return egl::EglContextLost();
-    }
+    const FunctionsGL *functions = GetFunctionsGL(context);
+    functions->flush();
     return egl::NoError();
 }
 
@@ -237,6 +237,52 @@ bool IOSurfaceSurfaceCGL::validateAttributes(EGLClientBuffer buffer,
     }
 
     return true;
+}
+
+// Wraps a FramebufferGL to hook the destroy function to delete the texture associated with the
+// framebuffer.
+class IOSurfaceFramebuffer : public FramebufferGL
+{
+  public:
+    IOSurfaceFramebuffer(const gl::FramebufferState &data,
+                         GLuint id,
+                         GLuint textureId,
+                         bool isDefault)
+        : FramebufferGL(data, id, isDefault), mTextureId(textureId)
+    {}
+    void destroy(const gl::Context *context) override
+    {
+        GetFunctionsGL(context)->deleteTextures(1, &mTextureId);
+        FramebufferGL::destroy(context);
+    }
+
+  private:
+    GLuint mTextureId;
+};
+
+FramebufferImpl *IOSurfaceSurfaceCGL::createDefaultFramebuffer(const gl::Context *context,
+                                                               const gl::FramebufferState &state)
+{
+    const FunctionsGL *functions = GetFunctionsGL(context);
+    StateManagerGL *stateManager = GetStateManagerGL(context);
+
+    GLuint texture = 0;
+    functions->genTextures(1, &texture);
+    const auto &format = kIOSurfaceFormats[mFormatIndex];
+    stateManager->bindTexture(gl::TextureType::Rectangle, texture);
+    CGLError error = CGLTexImageIOSurface2D(mCGLContext, GL_TEXTURE_RECTANGLE, format.nativeFormat,
+                                            mWidth, mHeight, format.nativeInternalFormat,
+                                            format.nativeType, mIOSurface, mPlane);
+    ASSERT(error == kCGLNoError);
+
+    GLuint framebuffer = 0;
+    functions->genFramebuffers(1, &framebuffer);
+    stateManager->bindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    stateManager->bindTexture(gl::TextureType::Rectangle, texture);
+    functions->framebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_RECTANGLE,
+                                    texture, 0);
+
+    return new IOSurfaceFramebuffer(state, framebuffer, texture, true);
 }
 
 }  // namespace rx

@@ -26,7 +26,7 @@ class D3DTextureSurfaceWGL : public SurfaceWGL
 {
   public:
     D3DTextureSurfaceWGL(const egl::SurfaceState &state,
-                         RendererGL *renderer,
+                         StateManagerGL *stateManager,
                          EGLenum buftype,
                          EGLClientBuffer clientBuffer,
                          DisplayWGL *display,
@@ -41,8 +41,8 @@ class D3DTextureSurfaceWGL : public SurfaceWGL
                                                      ID3D11Device *d3d11Device);
 
     egl::Error initialize(const egl::Display *display) override;
-    egl::Error makeCurrent() override;
-    egl::Error unMakeCurrent() override;
+    egl::Error makeCurrent(const gl::Context *context) override;
+    egl::Error unMakeCurrent(const gl::Context *context) override;
 
     egl::Error swap(const gl::Context *context) override;
     egl::Error postSubBuffer(const gl::Context *context,
@@ -63,7 +63,8 @@ class D3DTextureSurfaceWGL : public SurfaceWGL
     EGLint isPostSubBufferSupported() const override;
     EGLint getSwapBehavior() const override;
 
-    FramebufferImpl *createDefaultFramebuffer(const gl::FramebufferState &data) override;
+    FramebufferImpl *createDefaultFramebuffer(const gl::Context *context,
+                                              const gl::FramebufferState &data) override;
 
     HDC getDC() const override;
 
@@ -73,13 +74,10 @@ class D3DTextureSurfaceWGL : public SurfaceWGL
     EGLenum mBuftype;
     EGLClientBuffer mClientBuffer;
 
-    RendererGL *mRenderer;
-
     ID3D11Device *mDisplayD3D11Device;
 
     DisplayWGL *mDisplay;
     StateManagerGL *mStateManager;
-    const WorkaroundsGL &mWorkarounds;
     const FunctionsGL *mFunctionsGL;
     const FunctionsWGL *mFunctionsWGL;
 
@@ -98,7 +96,6 @@ class D3DTextureSurfaceWGL : public SurfaceWGL
 
     GLuint mColorRenderbufferID;
     GLuint mDepthStencilRenderbufferID;
-    GLuint mFramebufferID;
 };
 }  // namespace rx
 

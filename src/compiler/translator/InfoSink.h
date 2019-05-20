@@ -16,6 +16,7 @@ namespace sh
 {
 
 class ImmutableString;
+class TType;
 
 // Returns the fractional part of the given floating-point number.
 inline float fractionalPart(float f)
@@ -40,7 +41,7 @@ class TInfoSinkBase
     template <typename T>
     TInfoSinkBase &operator<<(const T &t)
     {
-        TPersistStringStream stream;
+        TPersistStringStream stream = sh::InitializeStream<TPersistStringStream>();
         stream << t;
         sink.append(stream.str());
         return *this;
@@ -69,6 +70,8 @@ class TInfoSinkBase
     }
     TInfoSinkBase &operator<<(const ImmutableString &str);
 
+    TInfoSinkBase &operator<<(const TType &type);
+
     // Make sure floats are written with correct precision.
     TInfoSinkBase &operator<<(float f)
     {
@@ -76,7 +79,7 @@ class TInfoSinkBase
         // does not have a fractional part, the default precision format does
         // not write the decimal portion which gets interpreted as integer by
         // the compiler.
-        TPersistStringStream stream;
+        TPersistStringStream stream = sh::InitializeStream<TPersistStringStream>();
         if (fractionalPart(f) == 0.0f)
         {
             stream.precision(1);

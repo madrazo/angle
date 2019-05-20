@@ -6,6 +6,8 @@
 
 #include "test_utils/ANGLETest.h"
 
+#include "test_utils/gl_raii.h"
+
 using namespace angle;
 
 class LineLoopTest : public ANGLETest
@@ -21,10 +23,8 @@ class LineLoopTest : public ANGLETest
         setConfigAlphaBits(8);
     }
 
-    virtual void SetUp()
+    void testSetUp() override
     {
-        ANGLETest::SetUp();
-
         mProgram = CompileProgram(essl1_shaders::vs::Simple(), essl1_shaders::fs::UniformColor());
         if (mProgram == 0)
         {
@@ -41,12 +41,7 @@ class LineLoopTest : public ANGLETest
         ASSERT_GL_NO_ERROR();
     }
 
-    virtual void TearDown()
-    {
-        glDeleteProgram(mProgram);
-
-        ANGLETest::TearDown();
-    }
+    void testTearDown() override { glDeleteProgram(mProgram); }
 
     void runTest(GLenum indexType, GLuint indexBuffer, const void *indexPtr)
     {
@@ -58,7 +53,7 @@ class LineLoopTest : public ANGLETest
 
         static const GLfloat stripPositions[] = {-0.5f, -0.5f, -0.5f, 0.5f,
                                                  0.5f,  0.5f,  0.5f,  -0.5f};
-        static const GLubyte stripIndices[] = {1, 0, 3, 2, 1};
+        static const GLubyte stripIndices[]   = {1, 0, 3, 2, 1};
 
         glUseProgram(mProgram);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexBuffer);
@@ -98,9 +93,6 @@ class LineLoopTest : public ANGLETest
 
 TEST_P(LineLoopTest, LineLoopUByteIndices)
 {
-    // TODO(fjhenigman): UByte not yet supported in VertexArrayVk
-    ANGLE_SKIP_TEST_IF(IsVulkan());
-
     // Disable D3D11 SDK Layers warnings checks, see ANGLE issue 667 for details
     // On Win7, the D3D SDK Layers emits a false warning for these tests.
     // This doesn't occur on Windows 10 (Version 1511) though.
@@ -121,7 +113,7 @@ TEST_P(LineLoopTest, LineLoopUShortIndices)
 
 TEST_P(LineLoopTest, LineLoopUIntIndices)
 {
-    if (!extensionEnabled("GL_OES_element_index_uint"))
+    if (!IsGLExtensionEnabled("GL_OES_element_index_uint"))
     {
         return;
     }
@@ -135,9 +127,6 @@ TEST_P(LineLoopTest, LineLoopUIntIndices)
 
 TEST_P(LineLoopTest, LineLoopUByteIndexBuffer)
 {
-    // TODO(fjhenigman): UByte not yet supported in VertexArrayVk
-    ANGLE_SKIP_TEST_IF(IsVulkan());
-
     // Disable D3D11 SDK Layers warnings checks, see ANGLE issue 667 for details
     ignoreD3D11SDKLayersWarnings();
 
@@ -172,7 +161,7 @@ TEST_P(LineLoopTest, LineLoopUShortIndexBuffer)
 
 TEST_P(LineLoopTest, LineLoopUIntIndexBuffer)
 {
-    if (!extensionEnabled("GL_OES_element_index_uint"))
+    if (!IsGLExtensionEnabled("GL_OES_element_index_uint"))
     {
         return;
     }
@@ -190,6 +179,22 @@ TEST_P(LineLoopTest, LineLoopUIntIndexBuffer)
     runTest(GL_UNSIGNED_INT, buf, reinterpret_cast<const void *>(sizeof(GLuint)));
 
     glDeleteBuffers(1, &buf);
+}
+
+// Tests an edge case with a very large line loop element count.
+// Disabled because it is slow and triggers an internal error.
+TEST_P(LineLoopTest, DISABLED_DrawArraysWithLargeCount)
+{
+    constexpr char kVS[] = "void main() { gl_Position = vec4(0); }";
+    constexpr char kFS[] = "void main() { gl_FragColor = vec4(0, 1, 0, 1); }";
+
+    ANGLE_GL_PROGRAM(program, kVS, kFS);
+    glUseProgram(program);
+    glDrawArrays(GL_LINE_LOOP, 0, 0x3FFFFFFE);
+    EXPECT_GL_ERROR(GL_OUT_OF_MEMORY);
+
+    glDrawArrays(GL_LINE_LOOP, 0, 0x1FFFFFFE);
+    EXPECT_GL_NO_ERROR();
 }
 
 // Use this to select which configurations (e.g. which renderer, which GLES major version) these

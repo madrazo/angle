@@ -59,7 +59,7 @@
             },
             "gl_DepthRange":{
                 "level":"COMMON_BUILTINS",
-                "initDynamicType":"TType *{type_name} = new TType(gl_DepthRangeParameters); {type_name}->setQualifier(EvqUniform);"
+                "initDynamicType":"TType *{type_name} = new TType(gl_DepthRangeParameters, false); {type_name}->setQualifier(EvqUniform);"
             }
         }
     },
@@ -671,6 +671,41 @@
                     "qualifier":"Layer"
                 }
             }
+        },
+        "subgroups":{
+            "ANGLEMultiDraw":{
+                "condition": "mResources.ANGLE_multi_draw",
+                "subgroups":{
+                  "ESSL3":{
+                        "variables":{
+                            "gl_DrawID":{
+                                "level":"ESSL3_BUILTINS",
+                                "extension":"ANGLE_multi_draw",
+                                "type":{
+                                    "basic":"Int",
+                                    "precision":"High",
+                                    "qualifier":"DrawID"
+                                }
+                            }
+                        }
+                    },
+                    "ESSL1":{
+                        "variables":{
+                            "gl_DrawID":{
+                                "suffix":"ESSL1",
+                                "level":"ESSL1_BUILTINS",
+                                "extension":"ANGLE_multi_draw",
+                                "type":{
+                                    "basic":"Int",
+                                    "precision":"High",
+                                    "qualifier":"DrawID"
+                                }
+                            }
+                        }
+                    }
+                }
+
+            }
         }
     },
     "ComputeShader":{
@@ -821,13 +856,12 @@
         }
     },
     "Multiview":{
-        "condition":"mResources.OVR_multiview && shaderType != GL_COMPUTE_SHADER",
+        "condition":"(mResources.OVR_multiview||mResources.OVR_multiview2) && shaderType != GL_COMPUTE_SHADER",
         "subgroups":{
             "ESSL3":{
                 "variables":{
                     "gl_ViewID_OVR":{
                         "level":"ESSL3_BUILTINS",
-                        "extension":"OVR_multiview",
                         "type":{
                             "basic":"UInt",
                             "precision":"High",
@@ -841,7 +875,6 @@
                     "gl_ViewID_OVR":{
                         "suffix":"ESSL1",
                         "level":"ESSL1_BUILTINS",
-                        "extension":"OVR_multiview",
                         "type":{
                             "basic":"Int",
                             "precision":"High",

@@ -10,44 +10,44 @@ namespace gl
 {
 
 inline VertexAttribCurrentValueData::VertexAttribCurrentValueData()
-    : Type(GL_FLOAT)
+    : Type(gl::VertexAttribType::Float)
 {
-    FloatValues[0] = 0.0f;
-    FloatValues[1] = 0.0f;
-    FloatValues[2] = 0.0f;
-    FloatValues[3] = 1.0f;
+    Values.FloatValues[0] = 0.0f;
+    Values.FloatValues[1] = 0.0f;
+    Values.FloatValues[2] = 0.0f;
+    Values.FloatValues[3] = 1.0f;
 }
 
 inline void VertexAttribCurrentValueData::setFloatValues(const GLfloat floatValues[4])
 {
     for (unsigned int valueIndex = 0; valueIndex < 4; valueIndex++)
     {
-        FloatValues[valueIndex] = floatValues[valueIndex];
+        Values.FloatValues[valueIndex] = floatValues[valueIndex];
     }
-    Type = GL_FLOAT;
+    Type = gl::VertexAttribType::Float;
 }
 
 inline void VertexAttribCurrentValueData::setIntValues(const GLint intValues[4])
 {
     for (unsigned int valueIndex = 0; valueIndex < 4; valueIndex++)
     {
-        IntValues[valueIndex] = intValues[valueIndex];
+        Values.IntValues[valueIndex] = intValues[valueIndex];
     }
-    Type = GL_INT;
+    Type = gl::VertexAttribType::Int;
 }
 
 inline void VertexAttribCurrentValueData::setUnsignedIntValues(const GLuint unsignedIntValues[4])
 {
     for (unsigned int valueIndex = 0; valueIndex < 4; valueIndex++)
     {
-        UnsignedIntValues[valueIndex] = unsignedIntValues[valueIndex];
+        Values.UnsignedIntValues[valueIndex] = unsignedIntValues[valueIndex];
     }
-    Type = GL_UNSIGNED_INT;
+    Type = gl::VertexAttribType::UnsignedInt;
 }
 
 inline bool operator==(const VertexAttribCurrentValueData &a, const VertexAttribCurrentValueData &b)
 {
-    return (a.Type == b.Type && memcmp(a.FloatValues, b.FloatValues, sizeof(float) * 4) == 0);
+    return (a.Type == b.Type && memcmp(&a.Values, &b.Values, sizeof(VertexAttribCurrentValueData::Values)) == 0);
 }
 
 inline bool operator!=(const VertexAttribCurrentValueData &a, const VertexAttribCurrentValueData &b)

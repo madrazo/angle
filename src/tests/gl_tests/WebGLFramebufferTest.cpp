@@ -28,13 +28,6 @@ class WebGLFramebufferTest : public ANGLETest
         setWebGLCompatibilityEnabled(true);
     }
 
-    void SetUp() override
-    {
-        ANGLETest::SetUp();
-        glRequestExtensionANGLE = reinterpret_cast<PFNGLREQUESTEXTENSIONANGLEPROC>(
-            eglGetProcAddress("glRequestExtensionANGLE"));
-    }
-
     void drawUByteColorQuad(GLuint program, GLint uniformLoc, const GLColor &color);
     void testDepthStencilDepthStencil(GLint width, GLint height);
     void testDepthStencilRenderbuffer(GLint width,
@@ -44,8 +37,6 @@ class WebGLFramebufferTest : public ANGLETest
     void testRenderingAndReading(GLuint program);
     void testUsingIncompleteFramebuffer(GLenum depthFormat, GLenum depthAttachment);
     void testDrawingMissingAttachment();
-
-    PFNGLREQUESTEXTENSIONANGLEPROC glRequestExtensionANGLE = nullptr;
 };
 
 constexpr GLint ALLOW_COMPLETE              = 0x1;
@@ -144,14 +135,17 @@ TEST_P(WebGLFramebufferTest, TestFramebufferRequiredCombinations)
     checkBufferBits(GL_DEPTH_ATTACHMENT, GL_NONE);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, 0);
 
-    // 3. COLOR_ATTACHMENT0 = RGBA/UNSIGNED_BYTE texture + DEPTH_STENCIL_ATTACHMENT = DEPTH_STENCIL
-    // renderbuffer
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_STENCIL, width, height);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER,
-                              renderbuffer);
-    EXPECT_GL_NO_ERROR();
-    checkFramebufferForAllowedStatuses(ALLOW_COMPLETE);
-    checkBufferBits(GL_DEPTH_STENCIL_ATTACHMENT, GL_NONE);
+    if (getClientMajorVersion() == 2)
+    {
+        // 3. COLOR_ATTACHMENT0 = RGBA/UNSIGNED_BYTE texture + DEPTH_STENCIL_ATTACHMENT =
+        // DEPTH_STENCIL renderbuffer
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_STENCIL, width, height);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER,
+                                  renderbuffer);
+        EXPECT_GL_NO_ERROR();
+        checkFramebufferForAllowedStatuses(ALLOW_COMPLETE);
+        checkBufferBits(GL_DEPTH_STENCIL_ATTACHMENT, GL_NONE);
+    }
 }
 
 void testAttachment(GLint width,
@@ -370,6 +364,9 @@ void WebGLFramebufferTest::testDepthStencilRenderbuffer(GLint width,
 // Test various attachment combinations with WebGL framebuffers.
 TEST_P(WebGLFramebufferTest, TestAttachments)
 {
+    // GL_DEPTH_STENCIL renderbuffer format is only valid for WebGL1
+    ANGLE_SKIP_TEST_IF(getClientMajorVersion() != 2);
+
     for (GLint width = 2; width <= 2; width += 2)
     {
         for (GLint height = 2; height <= 2; height += 2)
@@ -828,12 +825,7 @@ TEST_P(WebGLFramebufferTest, CheckValidColorDepthCombination)
 // Test to cover a bug in preserving the texture image index for WebGL framebuffer attachments
 TEST_P(WebGLFramebufferTest, TextureAttachmentCommitBug)
 {
-    if (extensionRequestable("GL_ANGLE_depth_texture"))
-    {
-        glRequestExtensionANGLE("GL_ANGLE_depth_texture");
-    }
-
-    ANGLE_SKIP_TEST_IF(!extensionEnabled("GL_ANGLE_depth_texture"));
+    ANGLE_SKIP_TEST_IF(!EnsureGLExtensionEnabled("GL_ANGLE_depth_texture"));
 
     GLTexture depthTexture;
     glBindTexture(GL_TEXTURE_2D, depthTexture.get());
@@ -854,8 +846,11 @@ TEST_P(WebGLFramebufferTest, TextureAttachmentCommitBug)
 ANGLE_INSTANTIATE_TEST(WebGLFramebufferTest,
                        ES2_D3D9(),
                        ES2_D3D11(),
-                       ES2_D3D11_FL9_3(),
                        ES2_OPENGL(),
-                       ES2_OPENGLES());
+                       ES2_OPENGLES(),
+                       ES3_D3D11(),
+                       ES3_OPENGL(),
+                       ES3_OPENGLES(),
+                       ES2_VULKAN());
 
-}  // namespace
+}  // namespace angle
